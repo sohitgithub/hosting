@@ -1,11 +1,15 @@
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { isPanelHost } from '../utils/hostingHosts.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/** Hostinger: nodejs/src/middleware → ../../.. = site root → public_html */
 const panelStaticDir = (() => {
   const configured = process.env.PANEL_STATIC_DIR?.trim();
   if (configured) return path.resolve(configured);
-  return path.resolve(process.cwd(), '../public_html');
+  return path.resolve(__dirname, '../../../public_html');
 })();
 
 const indexHtml = path.join(panelStaticDir, 'index.html');
