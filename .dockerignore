@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+storage/sites/*
+storage/ssl/*
+storage/backups/*
+storage/db-imports/*
+!storage/sites/.gitkeep
+!storage/ssl/.gitkeep
+!storage/backups/.gitkeep

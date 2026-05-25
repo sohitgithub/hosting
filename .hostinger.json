@@ -1,0 +1,9 @@
+{
+  "name": "syntax-verse-hosting-api",
+  "type": "nodejs",
+  "entry": "server.js",
+  "scripts": {
+    "build": "npm ci --omit=dev",
+    "start": "npm start"
+  }
+}

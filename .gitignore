@@ -1,0 +1,21 @@
+node_modules/
+.env
+.env.local
+*.log
+.DS_Store
+
+# User site files & certs (created on server)
+storage/sites/*
+!storage/sites/.gitkeep
+storage/ssl/*
+!storage/ssl/.gitkeep
+storage/backups/*
+!storage/backups/.gitkeep
+storage/db-imports/
+
+data/backups/*
+!data/backups/.gitkeep
+data/ssl/*
+!data/ssl/.gitkeep
+data/pma-tokens/*
+!data/pma-tokens/.gitkeep

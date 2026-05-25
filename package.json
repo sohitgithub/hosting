@@ -1,0 +1,45 @@
+{
+  "name": "syntax-verse-hosting-api",
+  "version": "1.0.0",
+  "description": "Syntax Verse Hosting REST API",
+  "main": "server.js",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "db:setup": "node scripts/setup-database.js",
+    "db:verify": "node scripts/verify-database.js",
+    "db:fix-indexes": "node scripts/fix-duplicate-indexes.mjs",
+    "db:fix-packet": "node scripts/fix-mysql-packet.mjs",
+    "mail:test": "node scripts/mail-test.mjs",
+    "user:reset-password": "node scripts/reset-user-password.mjs"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.17",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.12.0",
+    "nodemailer": "^8.0.8",
+    "react-router-dom": "^7.15.1",
+    "sequelize": "^6.37.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  },
+  "keywords": [
+    "hosting",
+    "api"
+  ],
+  "author": "Syntax Verse",
+  "license": "MIT"
+}
