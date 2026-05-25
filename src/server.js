@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import './loadEnv.js';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -34,9 +34,6 @@ import { renewExpiringCertificates } from './services/sslService.js';
 import { isPacketTooLargeError } from './config/mysqlPacket.js';
 import { getMailStatus, initMailService } from './services/mailService.js';
 import { getPublicAppUrlStatus } from './utils/appUrl.js';
-
-// Hostinger hPanel env can override .env — file wins so CLIENT_URL stays correct
-dotenv.config({ override: true });
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -77,6 +74,9 @@ function isAllowedCorsOrigin(origin) {
   if (allowedOrigins.has(norm)) return true;
   try {
     const host = new URL(norm).hostname;
+    if (process.env.ALLOW_HOSTINGERSITE_CORS !== 'false' && host.endsWith('.hostingersite.com')) {
+      return true;
+    }
     for (const allowed of allowedOrigins) {
       const ah = new URL(allowed).hostname;
       if (host === ah || host === `www.${ah}` || `www.${host}` === ah) return true;

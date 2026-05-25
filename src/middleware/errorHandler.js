@@ -28,6 +28,10 @@ export const errorHandler = (err, req, res, next) => {
     message =
       'Database request too large for MySQL. For SQL imports use smaller dumps or run: npm run db:fix-packet';
   }
+  if (err.message?.includes('CORS') || err.message?.includes('Not allowed by')) {
+    status = 403;
+    message = 'Origin not allowed. Set CLIENT_URL in .env to your site URL (https, no trailing slash).';
+  }
 
   if (status >= 500) {
     createLog({
