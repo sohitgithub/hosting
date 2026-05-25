@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -27,6 +27,7 @@ import { runSeed } from './seed.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { servePublicSite } from './middleware/servePublicSite.js';
 import { subdomainSiteMiddleware } from './middleware/serveSiteByHost.js';
+import { servePanelSpaMiddleware } from './middleware/servePanelSpa.js';
 import { sslRedirectMiddleware } from './middleware/sslRedirect.js';
 import { startHttpsIfEnabled } from './httpsServer.js';
 import { renewExpiringCertificates } from './services/sslService.js';
@@ -34,24 +35,64 @@ import { isPacketTooLargeError } from './config/mysqlPacket.js';
 import { getMailStatus, initMailService } from './services/mailService.js';
 import { getPublicAppUrlStatus } from './utils/appUrl.js';
 
+// Hostinger hPanel env can override .env — file wins so CLIENT_URL stays correct
+dotenv.config({ override: true });
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 const isProduction = process.env.NODE_ENV === 'production';
 
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-  process.env.CLIENT_URL,
-  process.env.PUBLIC_APP_URL,
-].filter(Boolean);
+function normalizeOrigin(url) {
+  if (!url?.trim()) return null;
+  try {
+    return new URL(url.trim()).origin;
+  } catch {
+    return url.trim().replace(/\/$/, '');
+  }
+}
+
+function buildAllowedOrigins() {
+  const raw = [
+    'http://localhost:5173',
+    'http://localhost:5174',
+    process.env.CLIENT_URL,
+    process.env.PUBLIC_APP_URL,
+    process.env.FRONTEND_URL,
+    ...(process.env.CORS_EXTRA_ORIGINS || '').split(','),
+  ];
+  const set = new Set();
+  for (const item of raw) {
+    const o = normalizeOrigin(item);
+    if (o) set.add(o);
+  }
+  return set;
+}
+
+const allowedOrigins = buildAllowedOrigins();
+
+function isAllowedCorsOrigin(origin) {
+  if (!origin) return true;
+  const norm = normalizeOrigin(origin);
+  if (allowedOrigins.has(norm)) return true;
+  try {
+    const host = new URL(norm).hostname;
+    for (const allowed of allowedOrigins) {
+      const ah = new URL(allowed).hostname;
+      if (host === ah || host === `www.${ah}` || `www.${host}` === ah) return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
 
 app.set('trust proxy', 1);
 app.use(helmet());
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (isAllowedCorsOrigin(origin)) {
         callback(null, true);
         return;
       }
@@ -59,7 +100,10 @@ app.use(
         callback(null, true);
         return;
       }
-      callback(new Error('Not allowed by CORS'));
+      console.warn(
+        `CORS blocked origin: ${origin} — allowed: ${[...allowedOrigins].join(', ') || '(none)'}`
+      );
+      callback(null, false);
     },
     credentials: true,
   })
@@ -110,6 +154,7 @@ app.use('/api/terminal', terminalRoutes);
 app.use(sslRedirectMiddleware);
 app.get('/sites/:domain', servePublicSite);
 app.get('/sites/:domain/*', servePublicSite);
+app.use(servePanelSpaMiddleware);
 app.use(subdomainSiteMiddleware);
 
 app.use(errorHandler);
