@@ -149,6 +149,14 @@ export async function payInvoice(userId, invoiceId, paymentMethodId) {
   if (!invoice) throw new Error('Invoice not found');
   if (invoice.status === 'paid') throw new Error('Invoice already paid');
 
+  const billingMode = (process.env.BILLING_MODE || 'demo').toLowerCase();
+  const stripeKey = process.env.STRIPE_SECRET_KEY?.trim();
+  if (billingMode === 'stripe' && stripeKey) {
+    throw new Error(
+      'Stripe checkout is not wired yet. Set BILLING_MODE=demo or contact support to pay hosting invoices.'
+    );
+  }
+
   const user = await User.findByPk(userId);
   const methods = user.paymentMethods || [];
   if (methods.length === 0) {
@@ -170,12 +178,13 @@ export async function payInvoice(userId, invoiceId, paymentMethodId) {
     userId,
     level: 'success',
     source: 'billing',
-    message: `Payment received: $${Number(invoice.amount).toFixed(2)} — ${invoice.description}`,
+    message: `Payment received (demo billing): $${Number(invoice.amount).toFixed(2)} — ${invoice.description}`,
   });
 
   return {
-    message: `Payment of $${Number(invoice.amount).toFixed(2)} successful`,
+    message: `Payment of $${Number(invoice.amount).toFixed(2)} recorded (demo — no card was charged)`,
     invoice: formatInvoice(invoice),
+    billingDemo: true,
   };
 }
 

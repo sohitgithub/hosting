@@ -12,6 +12,10 @@ import {
   upsertSubdomainRecord,
   applyPtrRecord,
 } from '../utils/dnsHelpers.js';
+import {
+  assertCanRegisterInPanel,
+  getHostingCapabilities,
+} from '../config/hostingCapabilities.js';
 
 const attachSiteUrls = (domain) => {
   const doc = formatDoc(domain);
@@ -65,6 +69,9 @@ export const getDomain = async (req, res, next) => {
 
 export const registerDomain = async (req, res, next) => {
   try {
+    const blocked = assertCanRegisterInPanel();
+    if (blocked) return res.status(blocked.status).json(blocked.body);
+
     const name = (req.body.domain || req.body.name)?.trim().toLowerCase();
     if (!name) return res.status(400).json({ message: 'Domain name required' });
 
@@ -112,8 +119,9 @@ export const registerDomain = async (req, res, next) => {
     res.status(201).json({
       ...attachSiteUrls(domain),
       registered: true,
+      demoRegistration: true,
       price,
-      message: `Domain ${name} registered successfully`,
+      message: `Domain ${name} added to panel (demo registration — purchase at a real registrar for public ownership).`,
     });
   } catch (err) {
     next(err);
@@ -122,6 +130,8 @@ export const registerDomain = async (req, res, next) => {
 
 export const addDomain = async (req, res, next) => {
   if (req.body.register === true || req.body.purchase === true) {
+    const blocked = assertCanRegisterInPanel();
+    if (blocked) return res.status(blocked.status).json(blocked.body);
     req.body.domain = req.body.domain || req.body.name;
     return registerDomain(req, res, next);
   }
@@ -530,25 +540,34 @@ export const initiateTransfer = async (req, res, next) => {
       ),
     });
 
-    setTimeout(async () => {
-      const d = await Domain.findByPk(domain.id);
-      if (d?.transferStatus === 'pending') {
-        await d.update({ transferStatus: 'in_progress', status: 'transferring' });
-      }
-    }, 2000);
+    const transferDemo = process.env.DOMAIN_TRANSFER_MODE === 'demo';
+    if (transferDemo) {
+      setTimeout(async () => {
+        const d = await Domain.findByPk(domain.id);
+        if (d?.transferStatus === 'pending') {
+          await d.update({ transferStatus: 'in_progress', status: 'transferring' });
+        }
+      }, 2000);
 
-    setTimeout(async () => {
-      const d = await Domain.findByPk(domain.id);
-      if (d?.transferStatus === 'in_progress') {
-        await d.update({
-          transferStatus: 'completed',
-          status: 'active',
-          registrar: 'Syntax Verse',
-        });
-      }
-    }, 8000);
+      setTimeout(async () => {
+        const d = await Domain.findByPk(domain.id);
+        if (d?.transferStatus === 'in_progress') {
+          await d.update({
+            transferStatus: 'completed',
+            status: 'active',
+            registrar: 'Syntax Verse',
+          });
+        }
+      }, 8000);
+    }
 
-    res.status(201).json(formatDoc(domain));
+    res.status(201).json({
+      ...formatDoc(domain),
+      transferDemo,
+      message: transferDemo
+        ? 'Transfer request recorded (demo — completes automatically in ~8s).'
+        : 'Transfer request recorded. Complete the transfer at your registrar; DNS pointing is enough to host the site.',
+    });
   } catch (err) {
     next(err);
   }
@@ -557,6 +576,7 @@ export const initiateTransfer = async (req, res, next) => {
 export const getDomainInfo = async (req, res) => {
   const serverPublicIp = getServerPublicIp();
   const isDev = process.env.NODE_ENV !== 'production';
+  const capabilities = getHostingCapabilities();
   res.json({
     serverPublicIp,
     syntaxVerseIp: serverPublicIp,
@@ -565,9 +585,12 @@ export const getDomainInfo = async (req, res) => {
     dnsSetupRecommended: 'a-records-at-registrar',
     nameserverNote:
       'Keep DNS at Hostinger (or your registrar) and add A records for @ and www. Syntax Verse nameservers are only needed when our DNS hosting is enabled for your server.',
-    transferNote: 'Unlock domain at current registrar and provide EPP/Auth code. DNS pointing is enough to host your website.',
+    transferNote: capabilities.domainRegistrationDemo
+      ? 'Demo mode: transfers may auto-complete. In production, complete transfer at your registrar.'
+      : 'Unlock domain at current registrar and submit auth code. Point A records to your server to go live — transfer can finish in parallel.',
     isDev,
     productionUrlExample: 'https://yourdomain.com',
     devPreviewExample: 'http://yourdomain.com.localhost:5000',
+    capabilities,
   });
 };
