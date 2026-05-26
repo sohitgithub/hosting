@@ -11,7 +11,15 @@ import authRoutes from './routes/authRoutes.js';
 import deploymentRoutes from './routes/deploymentRoutes.js';
 import domainRoutes from './routes/domainRoutes.js';
 import { protect } from './middleware/auth.js';
-import { registerDomain, searchDomain, getDomainInfo } from './controllers/domainController.js';
+import {
+  registerDomain,
+  registerDomainCheckout,
+  verifyDomainCheckout,
+  searchDomain,
+  getDomainInfo,
+} from './controllers/domainController.js';
+import { stripeWebhook } from './controllers/stripeWebhookController.js';
+import { getHostingCapabilities } from './config/hostingCapabilities.js';
 import ticketRoutes from './routes/ticketRoutes.js';
 import hostingRoutes from './routes/hostingRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
@@ -109,6 +117,13 @@ app.use(
   })
 );
 app.use(morgan(isProduction ? 'combined' : 'dev'));
+
+app.post(
+  '/api/webhooks/stripe',
+  express.raw({ type: 'application/json' }),
+  stripeWebhook
+);
+
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: process.env.JSON_BODY_LIMIT || '2mb' }));
 app.use(requestLogger);
@@ -137,7 +152,9 @@ app.use('/api/deployments', deploymentRoutes);
 
 app.get('/api/domains/search', searchDomain);
 app.get('/api/domains/info', getDomainInfo);
-app.post('/api/domains/register', protect, registerDomain);
+app.post('/api/domains/register', protect, registerDomainCheckout);
+app.post('/api/domains/register/checkout', protect, registerDomainCheckout);
+app.get('/api/domains/register/verify', protect, verifyDomainCheckout);
 app.use('/api/domains', domainRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/hosting', hostingRoutes);
@@ -188,6 +205,14 @@ const start = async () => {
     } else {
       console.log(`[app] Reset password links → ${resetLinks.baseUrl}`);
     }
+    const caps = getHostingCapabilities();
+    console.log(
+      `[app] Payments: ${caps.billing} | Domain sales: ${caps.canPurchaseDomainInPanel ? 'Namecheap+Stripe' : 'connect-only'}`
+    );
+    if (caps.setupRequired?.length) {
+      console.warn(`[app] Production setup missing: ${caps.setupRequired.join(', ')}`);
+    }
+
     const server = app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });

@@ -9,6 +9,7 @@ import {
   setDefaultPaymentMethod,
   PLANS,
 } from '../services/billingService.js';
+import { verifyCheckoutSession } from '../services/stripeService.js';
 
 export const getSummary = async (req, res, next) => {
   try {
@@ -50,7 +51,18 @@ export const postUpgrade = async (req, res, next) => {
 
 export const postPayInvoice = async (req, res, next) => {
   try {
-    const result = await payInvoice(req.user._id, req.params.id, req.body.paymentMethodId);
+    const result = await payInvoice(req.user._id, req.params.id);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+export const getVerifyCheckout = async (req, res, next) => {
+  try {
+    const sessionId = req.query.session_id;
+    if (!sessionId) return res.status(400).json({ message: 'session_id required' });
+    const result = await verifyCheckoutSession(req.user._id, sessionId);
     res.json(result);
   } catch (err) {
     res.status(400).json({ message: err.message });

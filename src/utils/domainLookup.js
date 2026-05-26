@@ -1,6 +1,9 @@
 import dns from 'dns/promises';
 import { Op } from 'sequelize';
 import { Domain } from '../models/index.js';
+import { checkRdapAvailability } from '../services/rdapLookup.js';
+import { checkDomainsAtNamecheap, isNamecheapConfigured } from '../services/namecheapService.js';
+import { getHostingCapabilities } from '../config/hostingCapabilities.js';
 
 const DNS_TIMEOUT_MS = 4500;
 
@@ -37,20 +40,6 @@ const RESERVED_LABELS = new Set([
   'mail',
   'ftp',
 ]);
-
-const hashLabel = (str) => {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = (h << 5) - h + str.charCodeAt(i);
-  return Math.abs(h);
-};
-
-/** Deterministic fallback when DNS is inconclusive (same name → same result). */
-const simulatedTaken = (fqdn) => {
-  const label = fqdn.split('.')[0].toLowerCase();
-  if (label.length < 3) return true;
-  if (RESERVED_LABELS.has(label)) return true;
-  return hashLabel(fqdn) % 100 < 42;
-};
 
 const withTimeout = (promise, ms) =>
   Promise.race([
@@ -113,9 +102,10 @@ export const normalizeSearchQuery = (raw) => {
   };
 };
 
-export const lookupDomainAvailability = async (fqdn, registeredHere = false) => {
+export const lookupDomainAvailability = async (fqdn, registeredHere = false, namecheapAvailable = null) => {
   const pricing = TLD_PRICING[`.${fqdn.split('.').slice(1).join('.')}`] || { price: 14.99, premium: false };
   const label = fqdn.split('.')[0].toLowerCase();
+  const caps = getHostingCapabilities();
 
   if (registeredHere) {
     return {
@@ -141,24 +131,85 @@ export const lookupDomainAvailability = async (fqdn, registeredHere = false) => 
     };
   }
 
-  const dnsResult = await hasPublicDns(fqdn);
-  const taken = dnsResult === true || (dnsResult === null && simulatedTaken(fqdn));
-
-  if (taken) {
-    const dnsSnapshot = dnsResult === true ? await fetchDomainDnsSnapshot(fqdn) : null;
+  if (namecheapAvailable === false) {
     return {
       domain: fqdn,
       available: false,
       price: pricing.price,
       premium: pricing.premium,
-      status: dnsResult === true ? 'taken' : 'unavailable',
+      status: 'taken',
       connectExisting: true,
       suggestedAction: 'connect',
+      verificationSource: 'namecheap',
+      reason: 'Not available at registrar — already registered.',
+    };
+  }
+
+  if (namecheapAvailable === true) {
+    return {
+      domain: fqdn,
+      available: true,
+      price: pricing.price,
+      premium: pricing.premium,
+      status: 'available',
+      connectExisting: false,
+      suggestedAction: caps.canPurchaseDomainInPanel ? 'purchase' : 'register',
+      verificationSource: 'namecheap',
+      canPurchaseInPanel: caps.canPurchaseDomainInPanel,
+      reason: caps.canPurchaseDomainInPanel
+        ? 'Available — secure checkout with card payment.'
+        : 'Available at registrar — purchase externally, then add to hosting.',
+    };
+  }
+
+  const rdap = await checkRdapAvailability(fqdn);
+  if (rdap.available === false) {
+    const dnsSnapshot = await fetchDomainDnsSnapshot(fqdn);
+    return {
+      domain: fqdn,
+      available: false,
+      price: pricing.price,
+      premium: pricing.premium,
+      status: 'taken',
+      connectExisting: true,
+      suggestedAction: 'connect',
+      verificationSource: 'rdap',
       dnsSnapshot,
-      reason:
-        dnsResult === true
-          ? 'Already registered — add it to your hosting panel and point A records to your server.'
-          : 'This domain is not available for registration.',
+      reason: 'Registered on the public internet — add to hosting if you own it.',
+    };
+  }
+
+  if (rdap.available === true) {
+    return {
+      domain: fqdn,
+      available: true,
+      price: pricing.price,
+      premium: pricing.premium,
+      status: 'available',
+      connectExisting: false,
+      suggestedAction: caps.canPurchaseDomainInPanel ? 'purchase' : 'register',
+      verificationSource: 'rdap',
+      canPurchaseInPanel: caps.canPurchaseDomainInPanel,
+      reason: caps.canPurchaseDomainInPanel
+        ? 'Available (RDAP) — pay to register and host.'
+        : 'Likely available — confirm at Hostinger before buying.',
+    };
+  }
+
+  const dnsResult = await hasPublicDns(fqdn);
+  if (dnsResult === true) {
+    const dnsSnapshot = await fetchDomainDnsSnapshot(fqdn);
+    return {
+      domain: fqdn,
+      available: false,
+      price: pricing.price,
+      premium: pricing.premium,
+      status: 'taken',
+      connectExisting: true,
+      suggestedAction: 'connect',
+      verificationSource: 'dns',
+      dnsSnapshot,
+      reason: 'DNS records found — domain is in use.',
     };
   }
 
@@ -167,10 +218,12 @@ export const lookupDomainAvailability = async (fqdn, registeredHere = false) => 
     available: true,
     price: pricing.price,
     premium: pricing.premium,
-    status: 'available',
+    status: 'likely_available',
     connectExisting: false,
-    suggestedAction: 'register',
-    reason: 'Available — register now before someone else does.',
+    suggestedAction: caps.canPurchaseDomainInPanel ? 'purchase' : 'register',
+    verificationSource: 'inconclusive',
+    canPurchaseInPanel: caps.canPurchaseDomainInPanel,
+    reason: 'No registration found — verify at checkout.',
   };
 };
 
@@ -207,8 +260,22 @@ export const searchDomains = async (query) => {
   });
   const registeredSet = new Set(registered.map((d) => d.name.toLowerCase()));
 
+  const namecheapMap = new Map();
+  if (isNamecheapConfigured()) {
+    try {
+      const checks = await checkDomainsAtNamecheap(domains);
+      checks?.forEach((row) => namecheapMap.set(row.domain.toLowerCase(), row.available));
+    } catch (err) {
+      console.warn('[domains] Namecheap check failed:', err.message);
+    }
+  }
+
   const results = await Promise.all(
-    domains.map((fqdn) => lookupDomainAvailability(fqdn, registeredSet.has(fqdn.toLowerCase())))
+    domains.map((fqdn) => {
+      const key = fqdn.toLowerCase();
+      const nc = namecheapMap.has(key) ? namecheapMap.get(key) : null;
+      return lookupDomainAvailability(fqdn, registeredSet.has(key), nc);
+    })
   );
 
   results.sort((a, b) => {

@@ -66,7 +66,10 @@ export const Domain = sequelize.define(
     sslError: DataTypes.TEXT,
     dnsRecords: { type: DataTypes.JSON, defaultValue: [] },
     nameservers: { type: DataTypes.JSON, defaultValue: DEFAULT_NAMESERVERS },
-    nameserverMode: { type: DataTypes.ENUM('syntaxverse', 'custom'), defaultValue: 'syntaxverse' },
+    nameserverMode: {
+      type: DataTypes.ENUM('syntaxverse', 'custom', 'registrar'),
+      defaultValue: 'registrar',
+    },
     primaryIp: { type: DataTypes.STRING, defaultValue: '76.76.21.21' },
     ptrRecord: { type: DataTypes.STRING },
     forwarding: {
@@ -147,6 +150,8 @@ export const Invoice = sequelize.define(
     paidAt: DataTypes.DATE,
     paymentMethodId: DataTypes.STRING,
     invoiceNumber: DataTypes.STRING,
+    stripeCheckoutSessionId: DataTypes.STRING,
+    paymentMeta: { type: DataTypes.JSON, defaultValue: {} },
   },
   { tableName: 'invoices' }
 );

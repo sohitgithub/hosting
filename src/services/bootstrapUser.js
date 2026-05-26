@@ -4,6 +4,7 @@ import {
   Invoice,
   Deployment,
 } from '../models/index.js';
+import { getHostingCapabilities } from '../config/hostingCapabilities.js';
 
 export async function bootstrapUser(userId, plan = 'starter') {
   const [hostingCount, invoiceCount] = await Promise.all([
@@ -49,22 +50,10 @@ export async function bootstrapUser(userId, plan = 'starter') {
     ]);
   }
 
+  const caps = getHostingCapabilities();
   const user = await User.findByPk(userId);
-  if (user && !(user.paymentMethods || []).length) {
-    await user.update({
-      paymentMethods: [
-        {
-          id: `pm_${userId}_demo`,
-          brand: 'visa',
-          last4: '4242',
-          expMonth: 12,
-          expYear: new Date().getFullYear() + 4,
-          name: 'Demo Card',
-          isDefault: true,
-          createdAt: new Date().toISOString(),
-        },
-      ],
-    });
+  if (user && !(user.paymentMethods || []).length && !caps.paymentsReady) {
+    await user.update({ paymentMethods: [] });
   }
 
   const deployCount = await Deployment.count({ where: { userId } });

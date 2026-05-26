@@ -16,6 +16,10 @@ import {
   assertCanRegisterInPanel,
   getHostingCapabilities,
 } from '../config/hostingCapabilities.js';
+import { createCheckoutForDomainRegistration } from '../services/stripeService.js';
+import { verifyCheckoutSession } from '../services/stripeService.js';
+import { checkDomainsAtNamecheap } from '../services/namecheapService.js';
+import { TLD_PRICING } from '../utils/domainLookup.js';
 
 const attachSiteUrls = (domain) => {
   const doc = formatDoc(domain);
@@ -67,10 +71,16 @@ export const getDomain = async (req, res, next) => {
   }
 };
 
+/** Demo-only instant register (DOMAIN_REGISTRATION_MODE=demo). Production uses Stripe checkout. */
 export const registerDomain = async (req, res, next) => {
   try {
-    const blocked = assertCanRegisterInPanel();
-    if (blocked) return res.status(blocked.status).json(blocked.body);
+    const caps = getHostingCapabilities();
+    if (!caps.domainRegistrationDemo) {
+      return res.status(400).json({
+        message: 'Use POST /api/domains/register/checkout for paid domain registration.',
+        capabilities: caps,
+      });
+    }
 
     const name = (req.body.domain || req.body.name)?.trim().toLowerCase();
     if (!name) return res.status(400).json({ message: 'Domain name required' });
@@ -128,12 +138,66 @@ export const registerDomain = async (req, res, next) => {
   }
 };
 
-export const addDomain = async (req, res, next) => {
-  if (req.body.register === true || req.body.purchase === true) {
+/** Real domain purchase: Namecheap availability + Stripe Checkout. */
+export const registerDomainCheckout = async (req, res, next) => {
+  try {
+    const caps = getHostingCapabilities();
+    if (caps.domainRegistrationDemo) {
+      req.body.domain = req.body.domain || req.body.name;
+      return registerDomain(req, res, next);
+    }
+
     const blocked = assertCanRegisterInPanel();
     if (blocked) return res.status(blocked.status).json(blocked.body);
+
+    const name = (req.body.domain || req.body.name)?.trim().toLowerCase();
+    if (!name) return res.status(400).json({ message: 'Domain name required' });
+
+    const existing = await Domain.findOne({ where: { name } });
+    if (existing) {
+      return res.status(400).json({ message: 'Domain is already registered on the platform' });
+    }
+
+    const checks = await checkDomainsAtNamecheap([name]);
+    if (!checks?.[0]?.available) {
+      return res.status(400).json({
+        message: 'This domain is not available for registration at the registrar.',
+      });
+    }
+
+    const tld = name.includes('.') ? name.substring(name.indexOf('.')) : '.com';
+    const price = TLD_PRICING[tld]?.price ?? 14.99;
+
+    const checkout = await createCheckoutForDomainRegistration(req.user, name, price);
+
+    res.json({
+      checkoutUrl: checkout.url,
+      sessionId: checkout.sessionId,
+      invoiceId: checkout.invoiceId,
+      domain: name,
+      price,
+      message: 'Complete payment to register your domain and activate hosting.',
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const verifyDomainCheckout = async (req, res, next) => {
+  try {
+    const { session_id: sessionId } = req.query;
+    if (!sessionId) return res.status(400).json({ message: 'session_id required' });
+    const result = await verifyCheckoutSession(req.user._id, sessionId);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const addDomain = async (req, res, next) => {
+  if (req.body.register === true || req.body.purchase === true) {
     req.body.domain = req.body.domain || req.body.name;
-    return registerDomain(req, res, next);
+    return registerDomainCheckout(req, res, next);
   }
 
   try {

@@ -14,6 +14,7 @@ const JSON_FIELDS = [
   'meta',
   'preferences',
   'paymentMethods',
+  'paymentMeta',
 ];
 
 const JSON_ARRAY_FIELDS = new Set([

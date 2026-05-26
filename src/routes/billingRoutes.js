@@ -5,6 +5,7 @@ import {
   getPlans,
   postUpgrade,
   postPayInvoice,
+  getVerifyCheckout,
   postPaymentMethod,
   deletePaymentMethod,
   patchDefaultPaymentMethod,
@@ -15,6 +16,7 @@ const router = express.Router();
 router.use(protect);
 
 router.get('/summary', getSummary);
+router.get('/verify-checkout', getVerifyCheckout);
 router.get('/plans', getPlans);
 router.get('/invoices', getInvoices);
 router.post('/upgrade', postUpgrade);

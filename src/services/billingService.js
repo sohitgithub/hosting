@@ -1,6 +1,8 @@
 import { User, Invoice, HostingAccount } from '../models/index.js';
 import { ensureHostingAccount } from './hostingPanelService.js';
 import { createLog } from './logService.js';
+import { getHostingCapabilities } from '../config/hostingCapabilities.js';
+import { createCheckoutForInvoice } from './stripeService.js';
 
 export const PLANS = {
   starter: {
@@ -41,10 +43,6 @@ export const PLANS = {
   },
 };
 
-function nextId(list) {
-  return String(Date.now()) + Math.random().toString(36).slice(2, 6);
-}
-
 function formatInvoice(inv) {
   const j = inv.toJSON ? inv.toJSON() : inv;
   return {
@@ -63,6 +61,7 @@ export async function getBillingSummary(userId) {
   const planId = user.plan || 'starter';
   const plan = PLANS[planId] || PLANS.starter;
   const account = await ensureHostingAccount(userId, planId);
+  const caps = getHostingCapabilities();
 
   const invoices = await Invoice.findAll({
     where: { userId },
@@ -91,13 +90,14 @@ export async function getBillingSummary(userId) {
       nextBillingDate: nextBilling.toISOString(),
       amountDue: pending.reduce((s, i) => s + Number(i.amount), 0),
       pendingCount: pending.length,
-      currency: 'USD',
+      currency: (process.env.STRIPE_CURRENCY || 'usd').toUpperCase(),
     },
-    paymentMethods,
-    defaultPaymentMethodId:
-      paymentMethods.find((p) => p.isDefault)?.id || paymentMethods[0]?.id || null,
+    paymentMethods: caps.paymentsReady ? [] : paymentMethods,
+    defaultPaymentMethodId: null,
     invoices: invoices.map(formatInvoice),
     plans: Object.values(PLANS),
+    capabilities: caps,
+    paymentsReady: caps.paymentsReady,
   };
 }
 
@@ -138,78 +138,37 @@ export async function upgradePlan(userId, newPlanId) {
   });
 
   return {
-    message: `Plan updated to ${plan.label}. Pay the new invoice to activate billing for this cycle.`,
+    message: `Plan updated to ${plan.label}. Pay the invoice to activate.`,
     plan: newPlanId,
     invoice: formatInvoice(invoice),
   };
 }
 
-export async function payInvoice(userId, invoiceId, paymentMethodId) {
+export async function payInvoice(userId, invoiceId) {
   const invoice = await Invoice.findOne({ where: { id: invoiceId, userId } });
   if (!invoice) throw new Error('Invoice not found');
   if (invoice.status === 'paid') throw new Error('Invoice already paid');
 
-  const billingMode = (process.env.BILLING_MODE || 'demo').toLowerCase();
-  const stripeKey = process.env.STRIPE_SECRET_KEY?.trim();
-  if (billingMode === 'stripe' && stripeKey) {
+  const caps = getHostingCapabilities();
+  if (!caps.paymentsReady) {
     throw new Error(
-      'Stripe checkout is not wired yet. Set BILLING_MODE=demo or contact support to pay hosting invoices.'
+      'Secure payments are not configured on this server. Add STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET.'
     );
   }
 
   const user = await User.findByPk(userId);
-  const methods = user.paymentMethods || [];
-  if (methods.length === 0) {
-    throw new Error('Add a payment method before paying');
-  }
-
-  const method = paymentMethodId
-    ? methods.find((m) => m.id === paymentMethodId)
-    : methods.find((m) => m.isDefault) || methods[0];
-  if (!method) throw new Error('Payment method not found');
-
-  await invoice.update({
-    status: 'paid',
-    paidAt: new Date(),
-    paymentMethodId: method.id,
-  });
-
-  await createLog({
-    userId,
-    level: 'success',
-    source: 'billing',
-    message: `Payment received (demo billing): $${Number(invoice.amount).toFixed(2)} — ${invoice.description}`,
-  });
+  const { url, sessionId } = await createCheckoutForInvoice(invoice, user);
 
   return {
-    message: `Payment of $${Number(invoice.amount).toFixed(2)} recorded (demo — no card was charged)`,
+    checkoutUrl: url,
+    sessionId,
+    message: 'Opening secure Stripe checkout…',
     invoice: formatInvoice(invoice),
-    billingDemo: true,
   };
 }
 
-export async function addPaymentMethod(userId, { brand, last4, expMonth, expYear, name }) {
-  const user = await User.findByPk(userId);
-  const digits = String(last4 || '').replace(/\D/g, '').slice(-4);
-  if (digits.length !== 4) throw new Error('Enter the last 4 digits of your card');
-
-  const methods = [...(user.paymentMethods || [])];
-  if (methods.length >= 5) throw new Error('Maximum 5 payment methods');
-
-  const entry = {
-    id: nextId(methods),
-    brand: (brand || 'visa').toLowerCase(),
-    last4: digits,
-    expMonth: Number(expMonth) || 12,
-    expYear: Number(expYear) || new Date().getFullYear() + 3,
-    name: (name || 'Cardholder').trim().slice(0, 80),
-    isDefault: methods.length === 0,
-    createdAt: new Date().toISOString(),
-  };
-  methods.push(entry);
-  await user.update({ paymentMethods: methods });
-
-  return entry;
+export async function addPaymentMethod() {
+  throw new Error('Add a card during Stripe checkout. Saved cards use Stripe Customer (coming soon).');
 }
 
 export async function removePaymentMethod(userId, methodId) {
@@ -217,9 +176,6 @@ export async function removePaymentMethod(userId, methodId) {
   let methods = (user.paymentMethods || []).filter((m) => m.id !== methodId);
   if (methods.length === (user.paymentMethods || []).length) {
     throw new Error('Payment method not found');
-  }
-  if (methods.length && !methods.some((m) => m.isDefault)) {
-    methods = methods.map((m, i) => (i === 0 ? { ...m, isDefault: true } : m));
   }
   await user.update({ paymentMethods: methods });
   return { message: 'Payment method removed' };

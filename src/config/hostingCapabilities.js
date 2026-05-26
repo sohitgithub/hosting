@@ -1,38 +1,43 @@
+import { isNamecheapConfigured } from '../services/namecheapService.js';
+
 /**
- * What this panel can do in production vs demo.
- *
- * DOMAIN_REGISTRATION_MODE:
- *   connect-only (default) — real hosting; domains bought at Hostinger/GoDaddy, then added here
- *   demo — panel-only fake register (development / demos only)
- *
- * BILLING_MODE:
- *   demo — invoices marked paid in DB only (no card charge)
- *   stripe — requires STRIPE_SECRET_KEY; charges via Stripe Checkout
+ * Production hosting panel capabilities.
+ * Real payments: STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET
+ * Real domain sales: above + Namecheap API credentials
  */
 
 export function getHostingCapabilities() {
-  const domainMode = (process.env.DOMAIN_REGISTRATION_MODE || 'connect-only').toLowerCase();
   const stripeKey = process.env.STRIPE_SECRET_KEY?.trim();
-  const billingEnv = (process.env.BILLING_MODE || '').toLowerCase();
-  const billingMode =
-    billingEnv === 'stripe' && stripeKey
-      ? 'stripe'
-      : billingEnv === 'demo' || !stripeKey
-        ? 'demo'
-        : billingEnv || 'demo';
+  const webhook = process.env.STRIPE_WEBHOOK_SECRET?.trim();
+  const namecheap = isNamecheapConfigured();
+  const isProd = process.env.NODE_ENV === 'production';
 
-  const canRegisterInPanel = domainMode === 'demo';
+  const billingMode = stripeKey && webhook ? 'stripe' : isProd ? 'unconfigured' : 'development';
+
+  const canPurchaseDomainInPanel = Boolean(stripeKey && webhook && namecheap);
+  const domainMode = canPurchaseDomainInPanel
+    ? 'reseller'
+    : process.env.DOMAIN_REGISTRATION_MODE === 'demo'
+      ? 'demo'
+      : 'connect';
+
+  const canRegisterInPanel = domainMode === 'demo' || canPurchaseDomainInPanel;
 
   return {
     product: 'Syntax Verse Hosting',
+    production: isProd,
     domainRegistration: domainMode,
-    domainRegistrationDemo: canRegisterInPanel,
+    domainRegistrationDemo: domainMode === 'demo',
     canRegisterInPanel,
+    canPurchaseDomainInPanel,
     canConnectExisting: true,
     canTransferInPanel: true,
     billing: billingMode,
-    billingDemo: billingMode === 'demo',
+    billingDemo: billingMode !== 'stripe',
     stripeConfigured: Boolean(stripeKey),
+    stripeWebhookConfigured: Boolean(webhook),
+    namecheapConfigured: namecheap,
+    paymentsReady: billingMode === 'stripe',
     externalDomainPurchaseUrl:
       process.env.EXTERNAL_DOMAIN_PURCHASE_URL?.trim() ||
       'https://www.hostinger.com/domain-name-search',
@@ -49,22 +54,32 @@ export function getHostingCapabilities() {
       databases: true,
       customDomains: true,
     },
+    setupRequired: [
+      ...(!stripeKey ? ['STRIPE_SECRET_KEY'] : []),
+      ...(!webhook ? ['STRIPE_WEBHOOK_SECRET'] : []),
+      ...(!namecheap && canPurchaseDomainInPanel === false && isProd
+        ? ['NAMECHEAP_API_* (for in-panel domain purchase)']
+        : []),
+    ],
     notes: {
-      en:
-        'Real hosting: upload files, publish, point DNS A records to your server IP. Domain names must be purchased at a registrar (Hostinger, GoDaddy, etc.) unless demo mode is enabled.',
+      en: canPurchaseDomainInPanel
+        ? 'Domains are checked via Namecheap, paid via Stripe, registered at the registrar, then hosted on your server.'
+        : 'Connect domains you already own. Enable Namecheap + Stripe on the server to sell domains inside the panel.',
     },
   };
 }
 
-export function assertCanRegisterInPanel(res) {
+export function assertCanRegisterInPanel() {
   const caps = getHostingCapabilities();
   if (caps.canRegisterInPanel) return null;
+
   return {
     status: 403,
     body: {
-      message:
-        'This panel does not sell domain names. Buy your domain at Hostinger or another registrar, then add it under Dashboard → Domains → Add existing domain.',
-      code: 'DOMAIN_REGISTRATION_DISABLED',
+      message: caps.paymentsReady
+        ? 'Domain checkout requires Namecheap API keys on the server. You can still add a domain you already purchased.'
+        : 'Payments are not configured on this server. Add a domain you purchased at Hostinger, or configure Stripe + Namecheap.',
+      code: 'DOMAIN_PURCHASE_UNAVAILABLE',
       capabilities: caps,
       externalPurchaseUrl: caps.externalDomainPurchaseUrl,
     },
