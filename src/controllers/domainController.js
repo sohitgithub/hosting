@@ -2,15 +2,23 @@ import { Domain, Invoice, DEFAULT_NAMESERVERS } from '../models/index.js';
 import { formatDoc, formatDocs } from '../utils/formatDoc.js';
 import { searchDomains } from '../utils/domainLookup.js';
 import { initSite } from '../services/siteStorage.js';
-import { domainToSlug } from '../utils/siteUrls.js';
+import { domainToSlug, getSiteUrls, buildSiteUrl } from '../utils/siteUrls.js';
 import { getServerPublicIp } from '../services/sslService.js';
 import { createLog } from '../services/logService.js';
 import {
   createRecordId,
   defaultDnsRecords,
   upsertARecord,
+  upsertSubdomainRecord,
   applyPtrRecord,
 } from '../utils/dnsHelpers.js';
+
+const attachSiteUrls = (domain) => {
+  const doc = formatDoc(domain);
+  doc.siteUrls = getSiteUrls(domain);
+  doc.productionUrl = doc.siteUrls.liveUrl;
+  return doc;
+};
 
 const findUserDomain = async (id, userId) => {
   const domain = await Domain.findOne({ where: { id, userId } });
@@ -39,7 +47,7 @@ export const getDomains = async (req, res, next) => {
       where: { userId: req.user._id },
       order: [['createdAt', 'DESC']],
     });
-    res.json(formatDocs(domains));
+    res.json(domains.map(attachSiteUrls));
   } catch (err) {
     next(err);
   }
@@ -49,7 +57,7 @@ export const getDomain = async (req, res, next) => {
   try {
     const domain = await findUserDomain(req.params.id, req.user._id);
     if (!domain) return res.status(404).json({ message: 'Domain not found' });
-    res.json(formatDoc(domain));
+    res.json(attachSiteUrls(domain));
   } catch (err) {
     next(err);
   }
@@ -102,7 +110,7 @@ export const registerDomain = async (req, res, next) => {
     });
 
     res.status(201).json({
-      ...formatDoc(domain),
+      ...attachSiteUrls(domain),
       registered: true,
       price,
       message: `Domain ${name} registered successfully`,
@@ -119,10 +127,23 @@ export const addDomain = async (req, res, next) => {
   }
 
   try {
-    const name = req.body.name?.trim().toLowerCase();
+    const name = (req.body.name || req.body.domain)?.trim().toLowerCase();
     if (!name) return res.status(400).json({ message: 'Domain name required' });
 
+    const existing = await Domain.findOne({ where: { name } });
+    if (existing) {
+      if (String(existing.userId) === String(req.user._id)) {
+        return res.status(400).json({ message: 'Domain is already in your account' });
+      }
+      return res.status(400).json({ message: 'Domain is already registered on the platform' });
+    }
+
     const ip = req.body.primaryIp || getServerPublicIp();
+    const useRegistrarDns =
+      req.body.dnsAtRegistrar !== false ||
+      req.body.connectExisting === true ||
+      req.body.nameserverMode === 'registrar';
+
     const domain = await Domain.create({
       userId: req.user._id,
       name,
@@ -130,13 +151,64 @@ export const addDomain = async (req, res, next) => {
       status: 'active',
       ssl: req.body.ssl || false,
       primaryIp: ip,
-      nameservers: DEFAULT_NAMESERVERS,
-      nameserverMode: 'syntaxverse',
+      nameservers: useRegistrarDns ? [] : DEFAULT_NAMESERVERS,
+      nameserverMode: useRegistrarDns ? 'registrar' : 'syntaxverse',
       dnsRecords: defaultDnsRecords(name, ip),
-      registrar: req.body.registrar || 'Syntax Verse',
+      registrar: req.body.registrar || (useRegistrarDns ? 'External registrar' : 'Syntax Verse'),
     });
     await initSite(domain.id, name);
-    res.status(201).json(formatDoc(domain));
+
+    await createLog({
+      userId: req.user._id,
+      level: 'success',
+      source: 'domain',
+      message: `Domain connected: ${name}`,
+      meta: { domainId: domain.id, dnsMode: useRegistrarDns ? 'registrar' : 'syntaxverse' },
+    });
+
+    res.status(201).json({
+      ...attachSiteUrls(domain),
+      connected: true,
+      dnsSetupRecommended: 'a-records-at-registrar',
+      message: useRegistrarDns
+        ? `Domain ${name} added — set A records @ and www → ${ip} at Hostinger (keep nameservers unchanged).`
+        : `Domain ${name} added — update nameservers or A records to point to ${ip}.`,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const addSubdomain = async (req, res, next) => {
+  try {
+    const domain = await findUserDomain(req.params.id, req.user._id);
+    if (!domain) return res.status(404).json({ message: 'Domain not found' });
+
+    const label = req.body.label || req.body.name;
+    if (!label) return res.status(400).json({ message: 'Subdomain label required (e.g. shop)' });
+
+    const ip = req.body.ip || domain.primaryIp || getServerPublicIp();
+    let dnsRecords;
+    try {
+      dnsRecords = upsertSubdomainRecord(domain.dnsRecords || [], label, ip, domain.name);
+    } catch (err) {
+      return res.status(400).json({ message: err.message });
+    }
+
+    await domain.update({ dnsRecords });
+    await domain.reload();
+    const host = `${String(label).toLowerCase().trim()}.${domain.name}`;
+    res.status(201).json({
+      ...attachSiteUrls(domain),
+      subdomain: {
+        label: String(label).toLowerCase().trim(),
+        host,
+        ip,
+        url: buildSiteUrl(host, { ssl: !!domain.ssl }),
+        dnsHint: `Add A record: ${label} → ${ip} at your registrar (if DNS is not hosted here).`,
+      },
+      message: `Subdomain ${host} configured — point DNS A record to ${ip}`,
+    });
   } catch (err) {
     next(err);
   }
@@ -280,6 +352,20 @@ export const updateNameservers = async (req, res, next) => {
     if (!domain) return res.status(404).json({ message: 'Domain not found' });
 
     const { mode, nameservers } = req.body;
+
+    if (mode === 'registrar') {
+      const ip = domain.primaryIp || getServerPublicIp();
+      let dnsRecords = (domain.dnsRecords || []).filter((r) => r.recordType !== 'NS');
+      dnsRecords = defaultDnsRecords(domain.name, ip);
+      await domain.update({
+        nameserverMode: 'registrar',
+        nameservers: [],
+        dnsRecords,
+      });
+      await domain.reload();
+      return res.json(attachSiteUrls(domain));
+    }
+
     const ns =
       mode === 'custom' && nameservers?.length
         ? nameservers
@@ -437,7 +523,11 @@ export const initiateTransfer = async (req, res, next) => {
       transferAuthCode: authCode,
       registrar: registrar || 'External',
       nameservers: DEFAULT_NAMESERVERS,
-      dnsRecords: defaultDnsRecords(name.trim().toLowerCase()),
+      primaryIp: getServerPublicIp(),
+      dnsRecords: defaultDnsRecords(
+        name.trim().toLowerCase(),
+        getServerPublicIp()
+      ),
     });
 
     setTimeout(async () => {

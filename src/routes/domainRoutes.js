@@ -14,6 +14,7 @@ import {
   setReverseProxy,
   setReverseDns,
   initiateTransfer,
+  addSubdomain,
 } from '../controllers/domainController.js';
 import { protect } from '../middleware/auth.js';
 import siteRoutes from './siteRoutes.js';
@@ -41,6 +42,7 @@ router.get('/:id/ssl', getSslStatus);
 router.post('/:id/ssl/install', installDomainSsl);
 router.post('/:id/ssl/renew', renewDomainSsl);
 router.delete('/:id/ssl', removeDomainSsl);
+router.post('/:id/subdomain', addSubdomain);
 router.post('/:id/point', pointToServer);
 router.patch('/:id/forwarding', setForwarding);
 router.patch('/:id/reverse-proxy', setReverseProxy);

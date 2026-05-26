@@ -23,39 +23,39 @@ export function getSitesBaseHost() {
   return process.env.SITES_BASE_HOST || 'sites.localhost';
 }
 
-function isDevEnvironment() {
+export function isDevEnvironment() {
   return process.env.NODE_ENV !== 'production';
 }
 
-function portSuffix(protocol) {
-  const isDev = isDevEnvironment();
+/** Dev-only port suffix. Production always uses standard 80/443 (no :5443). */
+function portSuffix(protocol, { dev = false } = {}) {
+  if (!dev && !isDevEnvironment()) return '';
+
   const httpPort = process.env.PORT || 5000;
   const httpsPort = process.env.SSL_HTTPS_PORT;
+
   if (protocol === 'https') {
-    if (httpsPort && httpsPort !== '443' && (isDev || httpsPort !== '443')) {
-      return `:${httpsPort}`;
-    }
+    if (httpsPort && httpsPort !== '443') return `:${httpsPort}`;
     return '';
   }
-  if (!isDev && httpPort === '80') return '';
   if (httpPort === '80' || httpPort === '443') return '';
   return `:${httpPort}`;
 }
 
 /**
- * Build a professional site URL.
- * Dev: http://softwarehouse.com.localhost:5000 (works in Chrome/Safari without /etc/hosts)
- * Prod: https://softwarehouse.com
+ * Build site URL.
+ * Production: https://example.com (no port)
+ * Dev preview: http://example.com.localhost:5000
  */
 export function buildSiteUrl(hostname, { ssl = false, dev = null } = {}) {
-  const useDev = dev ?? isDevEnvironment();
-  const protocol = useDev ? 'http' : ssl ? 'https' : 'https';
+  const useDev = dev ?? false;
+  const protocol = useDev ? 'http' : 'https';
   let host = String(hostname || '').toLowerCase();
   if (!host) return '';
   if (useDev && !host.endsWith('.localhost')) {
     host = `${host}.localhost`;
   }
-  return `${protocol}://${host}${portSuffix(protocol)}`;
+  return `${protocol}://${host}${portSuffix(protocol, { dev: useDev })}`;
 }
 
 export function getSiteUrls(domain) {
@@ -65,23 +65,21 @@ export function getSiteUrls(domain) {
 
   const apexUrl = buildSiteUrl(name, { ssl: sslOn, dev: false });
   const wwwUrl = buildSiteUrl(`www.${name}`, { ssl: sslOn, dev: false });
-  const liveUrl = buildSiteUrl(name, { ssl: sslOn, dev: isDev });
-  const wwwLiveUrl = buildSiteUrl(`www.${name}`, { ssl: sslOn, dev: isDev });
+  const devPreviewUrl = isDev ? buildSiteUrl(name, { ssl: false, dev: true }) : apexUrl;
 
   return {
     slug: domain.siteSlug || domainToSlug(name),
     sslActive: sslOn,
     domain: name,
-    /** Opens in browser during local dev */
-    liveUrl,
-    openUrl: liveUrl,
-    /** Production apex — domain.extension */
+    /** Primary link — always production-style URL */
+    liveUrl: apexUrl,
+    openUrl: apexUrl,
     apexUrl,
     primaryUrl: apexUrl,
     wwwUrl,
-    wwwLiveUrl,
-    /** @deprecated use liveUrl */
-    previewUrl: liveUrl,
+    wwwLiveUrl: wwwUrl,
+    devPreviewUrl,
+    previewUrl: devPreviewUrl,
     previewHost: isDev ? `${name}.localhost` : name,
     sitePublished: !!domain.sitePublished,
     isDev,
@@ -92,7 +90,7 @@ export function getSiteUrls(domain) {
 
 export async function enrichSiteUrls(domain) {
   const urls = getSiteUrls(domain);
-  const base = urls.liveUrl.replace(/\/$/, '');
+  const base = urls.apexUrl.replace(/\/$/, '');
 
   try {
     const { items } = await listDirectory(domain.id);
@@ -126,8 +124,9 @@ export async function enrichSiteUrls(domain) {
       return {
         label,
         host,
-        url: buildSiteUrl(host, { ssl: urls.sslActive, dev: urls.isDev }),
+        url: buildSiteUrl(host, { ssl: urls.sslActive, dev: false }),
         productionUrl: buildSiteUrl(host, { ssl: urls.sslActive, dev: false }),
+        recordType: r.recordType || 'A',
       };
     });
 
@@ -136,7 +135,7 @@ export async function enrichSiteUrls(domain) {
     urls.subdomains.push({
       label: dir.name,
       host: `${dir.name}.${domain.name}`,
-      url: buildSiteUrl(`${dir.name}.${domain.name}`, { ssl: urls.sslActive, dev: urls.isDev }),
+      url: buildSiteUrl(`${dir.name}.${domain.name}`, { ssl: urls.sslActive, dev: false }),
       productionUrl: buildSiteUrl(`${dir.name}.${domain.name}`, { ssl: urls.sslActive, dev: false }),
       folderPath: dir.path,
       isFolder: true,

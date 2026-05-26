@@ -17,8 +17,10 @@ export const sslRedirectMiddleware = async (req, res, next) => {
     const resolved = await resolveSiteFromHost(host);
     if (!resolved?.domain || !isSslActive(resolved.domain)) return next();
 
-    const port = process.env.SSL_HTTPS_PORT || '443';
-    const defaultPort = port === '80' || port === '443' ? '' : `:${port}`;
+    const isProd = process.env.NODE_ENV === 'production';
+    const rawPort = process.env.SSL_HTTPS_PORT || '443';
+    const defaultPort =
+      isProd || rawPort === '80' || rawPort === '443' ? '' : `:${rawPort}`;
     const target = `https://${host}${defaultPort}${req.originalUrl}`;
     return res.redirect(301, target);
   } catch {

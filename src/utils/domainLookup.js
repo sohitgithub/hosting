@@ -124,7 +124,9 @@ export const lookupDomainAvailability = async (fqdn, registeredHere = false) => 
       price: pricing.price,
       premium: pricing.premium,
       status: 'registered_here',
-      reason: 'Already registered in your Syntax Verse account.',
+      connectExisting: false,
+      suggestedAction: 'manage',
+      reason: 'Already in your hosting account — open Dashboard → Domains.',
     };
   }
 
@@ -143,15 +145,19 @@ export const lookupDomainAvailability = async (fqdn, registeredHere = false) => 
   const taken = dnsResult === true || (dnsResult === null && simulatedTaken(fqdn));
 
   if (taken) {
+    const dnsSnapshot = dnsResult === true ? await fetchDomainDnsSnapshot(fqdn) : null;
     return {
       domain: fqdn,
       available: false,
       price: pricing.price,
       premium: pricing.premium,
       status: dnsResult === true ? 'taken' : 'unavailable',
+      connectExisting: true,
+      suggestedAction: 'connect',
+      dnsSnapshot,
       reason:
         dnsResult === true
-          ? 'Registered on the public internet (DNS records found).'
+          ? 'Already registered — add it to your hosting panel and point A records to your server.'
           : 'This domain is not available for registration.',
     };
   }
@@ -162,8 +168,31 @@ export const lookupDomainAvailability = async (fqdn, registeredHere = false) => 
     price: pricing.price,
     premium: pricing.premium,
     status: 'available',
+    connectExisting: false,
+    suggestedAction: 'register',
     reason: 'Available — register now before someone else does.',
   };
+};
+
+/** Public DNS snapshot for domains already on the internet (connect-existing flow). */
+export const fetchDomainDnsSnapshot = async (fqdn) => {
+  const snapshot = { a: [], aaaa: [], ns: [], mx: [], cname: [] };
+  const safe = async (fn, key) => {
+    try {
+      const records = await withTimeout(fn(), DNS_TIMEOUT_MS);
+      snapshot[key] = Array.isArray(records) ? records : [records];
+    } catch {
+      /* ignore */
+    }
+  };
+  await Promise.all([
+    safe(() => dns.resolve4(fqdn), 'a'),
+    safe(() => dns.resolve6(fqdn), 'aaaa'),
+    safe(() => dns.resolveNs(fqdn), 'ns'),
+    safe(() => dns.resolveMx(fqdn).then((rows) => rows.map((r) => r.exchange)), 'mx'),
+    safe(() => dns.resolveCname(fqdn), 'cname'),
+  ]);
+  return snapshot;
 };
 
 export const searchDomains = async (query) => {
